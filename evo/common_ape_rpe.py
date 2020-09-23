@@ -54,6 +54,24 @@ def load_trajectories(args):
             ref_name, est_name = args.ref_topic, args.est_topic
         finally:
             bag.close()
+    elif args.subcommand == "voliro":
+        import os
+        ulog_file_path = args.data_path+'/'+args.ulog+'.ulg'
+        logger.debug("Opening uLog file " + ulog_file_path)
+        if not os.path.exists(ulog_file_path):
+            raise file_interface.FileInterfaceException(
+                "File doesn't exist: {}".format(ulog_file_path))
+        logger.debug("Opening bag file " + args.bag)
+        if not os.path.exists(args.bag):
+            raise file_interface.FileInterfaceException(
+                "File doesn't exist: {}".format(args.bag))
+        import rosbag
+        bag = rosbag.Bag(args.bag, 'r')
+        try:
+            traj_est, traj_ref = file_interface.read_px4_bag_trajectories(args.data_path, bag, args.ulog, args.ref_topic)
+            ref_name, est_name = args.ref_topic, "EKF2"
+        finally:
+            bag.close()
     else:
         raise KeyError("unknown sub-command: {}".format(args.subcommand))
 

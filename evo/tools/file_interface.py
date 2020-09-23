@@ -28,6 +28,8 @@ import os
 import zipfile
 
 import numpy as np
+from scipy.interpolate import interp1d
+import tf.transformations as tf
 
 from evo import EvoException
 import evo.core.lie_algebra as lie
@@ -35,6 +37,7 @@ import evo.core.transformations as tr
 from evo.core import result
 from evo.core.trajectory import PosePath3D, PoseTrajectory3D
 from evo.tools import user
+from evo.tools import lib_px4
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +311,123 @@ def write_bag_trajectory(bag_handle, traj, topic_name, frame_id=""):
         p.pose.orientation.z = quat[3]
         bag_handle.write(topic_name, p, t=p.header.stamp)
     logger.info("Saved geometry_msgs/PoseStamped topic: " + topic_name)
+
+
+def getEulerFromQuaternion(data,idx):
+    n = len(data)
+    data_euler = np.zeros((n,3))
+    for i in range(0,n):
+        data_euler[i,:] = tf.euler_from_quaternion(data[i,idx])
+    return np.unwrap(data_euler, axis=0)
+
+
+def getQuaternionFromEuler(data_euler):
+    n = len(data_euler)
+    data_quat = np.zeros((n,4))
+    for i in range(0,n):
+        data_quat[i,[1,2,3,0]] = tf.quaternion_from_euler(*data_euler[i,:])
+    return data_quat
+
+
+def get_groundtruth(bag_handle, groundtruth_topic):
+    print("GT topic: ", groundtruth_topic)
+    gt_msg_type = bag_handle.get_type_and_topic_info().topics[groundtruth_topic].msg_type
+    if gt_msg_type not in SUPPORTED_ROS_MSGS:
+        raise FileInterfaceException(
+            "unsupported message type: {}".format(gt_msg_type))
+    # Choose appropriate message conversion.
+    if gt_msg_type == "geometry_msgs/TransformStamped":
+        get_xyz_quat = _get_xyz_quat_from_transform_stamped
+    else:
+        get_xyz_quat = _get_xyz_quat_from_pose_or_odometry_msg
+
+    gt_raw_t = []
+    gt_raw_xyz = []
+    gt_raw_quat = []
+    for topic, msg, t in bag_handle.read_messages(topics=groundtruth_topic):
+        gt_raw_t.append(msg.header.stamp.to_sec())
+        gt_raw_xyz_t, gt_raw_quat_t = get_xyz_quat(msg)
+        gt_raw_xyz.append(gt_raw_xyz_t)
+        gt_raw_quat.append(gt_raw_quat_t)
+
+    gt_raw_xyz = np.array(gt_raw_xyz)
+    gt_raw_quat = np.array(gt_raw_quat)
+    gt_raw_euler = getEulerFromQuaternion(gt_raw_quat, [1,2,3,0])
+    gt_raw_t = np.array(gt_raw_t)
+    return gt_raw_t, gt_raw_xyz, gt_raw_quat, gt_raw_euler
+
+
+def get_mavros_timesync(bag_handle):
+    mavros_timesync = []
+    for topic, msg, t in bag_handle.read_messages(topics='/dragonfly/mavros/timesync_status'):
+        mavros_timesync.append(
+            [msg.header.stamp.to_sec(), msg.remote_timestamp_ns, msg.observed_offset_ns, msg.estimated_offset_ns,
+             msg.round_trip_time_ms])
+    mavros_timesync = np.array(mavros_timesync)
+    return mavros_timesync
+
+
+def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topic):
+    """
+    :param data_path: directory where rosbag and ulog exist
+    :param bag_handle: opened bag handle, from rosbag.Bag(...)
+    :param ulog_name: name of the uLog file
+    :param groundtruth_topic: groundtruth trajectory topic
+    :return: trajectory.PoseTrajectory3D, trajectory.PoseTrajectory3D
+    """
+
+    # Read Local position estimate from PX4 ulog
+    px4log = lib_px4.px4Log(data_path, ulog_name)
+    px4log.readlpe()
+    px4log.readAttitude()
+    px4log.lpe[:,0] /= 1.0e6  # convert to sec
+    px4log.att[:,0] /= 1.0e6
+
+    # Read groundtruth trajectory and MAVROS timesync info from ROSBAG
+    if not bag_handle.get_message_count(groundtruth_topic) > 0:
+        raise FileInterfaceException("no messages for topic '" + groundtruth_topic +
+                                     "' in bag")
+    if not bag_handle.get_message_count("/dragonfly/mavros/timesync_status") > 0:
+        raise FileInterfaceException("no messages for topic '" + groundtruth_topic +
+                                     "' in bag")
+
+    gt_raw_t, gt_raw_xyz, gt_raw_quat, gt_raw_euler = get_groundtruth(bag_handle, groundtruth_topic)
+    mavros_timesync = get_mavros_timesync(bag_handle)
+
+    # Translate Groundtruth to PX4 clock
+    px4_time_diff = mavros_timesync[:,3].mean() / 1.0e9 # avg. time diff in seconds
+    gt_raw_t -= px4_time_diff
+
+    # Crop the overlapping time window and realign data to new timescale with fixed intervals
+    dt = 0.01  # 100 Hz
+    print("Got LPE data from ", px4log.lpe[0,0], " to ", px4log.lpe[-1,0], " sec")
+    print("Got Attitude data from ", px4log.att[0,0], " to ", px4log.att[-1,0], " sec")
+    print("Got GT data from ", gt_raw_t[0], " to ", gt_raw_t[-1], " sec")
+    t_min = max([px4log.lpe[0,0], px4log.att[0,0], gt_raw_t[0]])
+    t_max = min([px4log.lpe[-1,0], px4log.att[-1,0], gt_raw_t[-1]]) - dt
+    print("Realigning data with dt = ", dt, ", t0 = ", t_min, ", t_end = ", t_max)
+    t = np.arange(t_min, t_max, dt)
+    # Re-align all data
+    f = interp1d(gt_raw_t, gt_raw_euler.transpose())
+    gt_euler = f(t).transpose()
+    gt_quat = getQuaternionFromEuler(gt_euler)
+    f = interp1d(gt_raw_t, gt_raw_xyz.transpose())
+    gt_xyz = f(t).transpose()
+    f = interp1d(px4log.lpe[:,0], px4log.lpe[:,4:7].transpose())
+    lpe_xyz = f(t).transpose()
+    f = interp1d(px4log.att[:,0], px4log.att_euler.transpose())
+    att_euler = f(t).transpose()
+    att_quat = getQuaternionFromEuler(att_euler)[:,[3,0,1,2]]
+
+    # Convert to PoseTrajectory3D
+    logger.debug("Loaded {} Local position estimate messages".format(
+        len(px4log.lpe)))
+    logger.debug("Loaded {} Groundtruth messages from topic {}".format(
+        len(gt_raw_t), groundtruth_topic))
+
+    print("Debug lengths: ", len(t), len(lpe_xyz), len(att_quat), len(gt_xyz), len(gt_quat))
+    return [PoseTrajectory3D(lpe_xyz, att_quat, t, meta={"frame_id": "NED"}),
+            PoseTrajectory3D(gt_xyz, gt_quat, t, meta={"frame_id": "ENU"})]
 
 
 def save_res_file(zip_path, result_obj, confirm_overwrite=False):

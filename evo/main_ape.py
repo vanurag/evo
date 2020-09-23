@@ -147,8 +147,16 @@ def parser():
     bag_parser.add_argument("ref_topic", help="reference trajectory topic")
     bag_parser.add_argument("est_topic", help="estimated trajectory topic")
 
+    voliro_parser = sub_parsers.add_parser(
+        "voliro", parents=[shared_parser],
+        description="{} for Voliro's PX4 uLog + ROS bag files - {}".format(basic_desc, lic))
+    voliro_parser.add_argument("data_path", help="dataset path")
+    voliro_parser.add_argument("bag", help="ROS bag file")
+    voliro_parser.add_argument("ulog", help="uLog file name, without .ulg")
+    voliro_parser.add_argument("ref_topic", help="reference trajectory topic")
+
     # Add time-sync options to parser of trajectory formats.
-    for trajectory_parser in {bag_parser, euroc_parser, tum_parser}:
+    for trajectory_parser in {bag_parser, euroc_parser, tum_parser, voliro_parser}:
         trajectory_parser.add_argument(
             "--t_max_diff", type=float, default=0.01,
             help="maximum timestamp difference for data association")

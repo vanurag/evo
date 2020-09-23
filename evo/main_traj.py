@@ -162,6 +162,14 @@ def parser():
     bag_parser.add_argument("--all_topics",
                             help="use all compatible topics in the bag",
                             action="store_true")
+
+    voliro_parser = sub_parsers.add_parser(
+        "voliro", parents=[shared_parser],
+        description="{} for Voliro's PX4 uLog + ROS bag files - {}".format(basic_desc, lic))
+    voliro_parser.add_argument("data_path", help="dataset path")
+    voliro_parser.add_argument("bag", help="ROS bag file")
+    voliro_parser.add_argument("ulog", help="uLog file name, without .ulg")
+
     return main_parser
 
 
@@ -229,6 +237,22 @@ def load_trajectories(args):
                     bag, topic)
             if args.ref:
                 ref_traj = file_interface.read_bag_trajectory(bag, args.ref)
+        finally:
+            bag.close()
+    elif args.subcommand == "voliro":
+        ulog_file_path = args.data_path + '/' + args.ulog + '.ulg'
+        logger.debug("Opening uLog file " + ulog_file_path)
+        if not os.path.exists(ulog_file_path):
+            raise file_interface.FileInterfaceException(
+                "File doesn't exist: {}".format(ulog_file_path))
+        if not os.path.exists(args.bag):
+            raise file_interface.FileInterfaceException(
+                "File doesn't exist: {}".format(args.bag))
+        import rosbag
+        logger.debug("Opening bag file " + args.bag)
+        bag = rosbag.Bag(args.bag, 'r')
+        try:
+            trajectories["EKF2"], ref_traj = file_interface.read_px4_bag_trajectories(args.data_path, bag, args.ulog, args.ref)
         finally:
             bag.close()
     return trajectories, ref_traj

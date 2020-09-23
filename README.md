@@ -187,6 +187,24 @@ There are some example trajectories in the source folder in `test/data`.
     <img src="https://raw.githubusercontent.com/MichaelGrupp/evo/master/doc/assets/res_violin.png" alt="evo" height="200" border="5" />
   </a>
 
+
+### 4.) Process Voliro ULog + ROSBAG
+
+  First, convert uLogs to .csv
+```
+evo/Tools/convertAllUlgs.sh <uLog_file>
+```
+
+  `evo_traj` can be used for plotting trajectories
+```
+evo_traj voliro <path_to_dataset_folder> <path_to_rosbag> <uLog_csv_folder_name> --ref <groundtruth_ros_topic> -vap --plot_mode xyz
+```
+
+  `evo_ape` can be used to run APE error metric with this command
+```
+evo_ape voliro <path_to_dataset_folder> <path_to_rosbag> <uLog_csv_folder_name> <groundtruth_ros_topic> -vap --plot_mode xyz
+```
+
 ---
 
 ## IPython / Jupyter Resources

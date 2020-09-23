@@ -240,7 +240,7 @@ def load_trajectories(args):
         finally:
             bag.close()
     elif args.subcommand == "voliro":
-        ulog_file_path = args.data_path + '/' + args.ulog + '.ulg'
+        ulog_file_path = args.data_path + '/' + args.ulog + '/' +args.ulog + '.ulg'
         logger.debug("Opening uLog file " + ulog_file_path)
         if not os.path.exists(ulog_file_path):
             raise file_interface.FileInterfaceException(

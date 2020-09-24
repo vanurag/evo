@@ -200,9 +200,14 @@ evo/Tools/convertAllUlgs.sh <uLog_file>
 evo_traj voliro <path_to_dataset_folder> <path_to_rosbag> <uLog_csv_folder_name> --ref <groundtruth_ros_topic> -vap --plot_mode xyz
 ```
 
-  `evo_ape` can be used to run APE/RPE error metric with this command
+  `evo_ape` can be used to run APE error metric with this command, which is appropriate for GPS mode
 ```
-evo_(ape/rpe) voliro <path_to_dataset_folder> <path_to_rosbag> <uLog_csv_folder_name> <groundtruth_ros_topic> -vap --plot_mode xyz
+evo_ape voliro <path_to_dataset_folder> <path_to_rosbag> <uLog_csv_folder_name> <groundtruth_ros_topic> -vap --plot_mode xyz -r full,trans_part,angle_deg
+```
+
+  `evo_rpe` can be used to run RPE error metric with this command, which is appropriate for OF mode
+```
+evo_rpe voliro <path_to_dataset_folder> <path_to_rosbag> <uLog_csv_folder_name> <groundtruth_ros_topic> -vap --plot_mode xyz -r full,trans_part,angle_deg
 ```
 
 ---

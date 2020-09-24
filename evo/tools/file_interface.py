@@ -419,6 +419,29 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
     att_euler = f(t).transpose()
     att_quat = getQuaternionFromEuler(att_euler)[:,[3,0,1,2]]
 
+    # Frames
+    # I -> Inertial reference frame for groundtruth
+    # W -> EKF2 reference frame (NED)
+    # B -> Body frame being tracked for groundtruth
+    # C -> Center-of-mass frame (PX4 XYZ frame)
+
+    # Calibration params
+    q_CB = np.array([0.0,1.0,0.0,0.0])  # [w,x,y,z]
+    C_t_CI = px4log.imu_pos
+    I_t_IB = np.array([-0.26, 0.0, 0.022])  # this is a calibration param
+    C_t_CB = I_t_IB + C_t_CI
+
+    # Some coordinate transformations
+    I_t_IB = gt_xyz
+    q_IB = gt_quat
+    q_WC = att_quat
+    W_t_WC = lpe_xyz
+    W_t_WB = np.zeros((len(q_WC),3))
+    q_WB = np.zeros((len(q_WC), 4))
+    for i in range(len(q_WC)):
+        W_t_WB[i,:] = tr.quaternion_matrix(q_WC[i,:])[:3,:3].dot(C_t_CB) + W_t_WC[i,:]
+        q_WB[i,:] = tr.quaternion_multiply(q_CB, q_WC[i,:])
+
     # Convert to PoseTrajectory3D
     logger.debug("Loaded {} Local position estimate messages".format(
         len(px4log.lpe)))
@@ -426,8 +449,8 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
         len(gt_raw_t), groundtruth_topic))
 
     print("Debug lengths: ", len(t), len(lpe_xyz), len(att_quat), len(gt_xyz), len(gt_quat))
-    return [PoseTrajectory3D(lpe_xyz, att_quat, t, meta={"frame_id": "NED"}),
-            PoseTrajectory3D(gt_xyz, gt_quat, t, meta={"frame_id": "ENU"})]
+    return [PoseTrajectory3D(W_t_WB, q_WB, t, meta={"frame_id": "PX4 XYZ"}),
+            PoseTrajectory3D(I_t_IB, q_IB, t, meta={"frame_id": "GT Body"})]
 
 
 def save_res_file(zip_path, result_obj, confirm_overwrite=False):

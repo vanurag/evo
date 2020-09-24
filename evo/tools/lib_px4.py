@@ -2,6 +2,7 @@ import numpy as np
 import csv
 import matplotlib.pyplot as plt
 import tf.transformations as tf
+import pyulog
 
 # NOTE: Pixhawk uses the Hamilton convention for quaternions, i.e. q = [w, x, y, z]
 # tf uses the JPL convention, i.e. q = [x, y, z, w]
@@ -15,6 +16,11 @@ class px4Log:
 	def __init__(self, path_dir, filename):
 		self.filename = filename
 		self.path_dir = path_dir
+		self.ulog = pyulog.ULog(self.path_dir + '/' + self.filename + '/' + self.filename + '.ulg')
+		# position of IMU in COM frame
+		self.imu_pos = np.array([self.ulog.initial_parameters['EKF2_IMU_POS_X'],
+								 self.ulog.initial_parameters['EKF2_IMU_POS_Y'],
+								 self.ulog.initial_parameters['EKF2_IMU_POS_Z']])
 		# Create empty arrays to avoid exceptions:
 		self.lpe = np.zeros([1,10]) 
 		self.pos_sp = np.zeros([1,10]) 
@@ -95,9 +101,8 @@ class px4Log:
 			self.att_euler = np.zeros([n,3])
 			for i in range(0,n):
 				q = np.hstack([self.att[i,5:8],self.att[i,4:5]])
-				q_rot = np.array([0.707,0.707,0,0])
-				q = tf.quaternion_multiply(q_rot,q)
-				# self.att_euler[i] = tf.euler_from_quaternion(np.hstack([self.att[i,5:8],self.att[i,4:5]]))
+				# q_rot = np.array([0.707,0.707,0,0])
+				# q = tf.quaternion_multiply(q_rot,q)
 				self.att_euler[i] = tf.euler_from_quaternion(q)
 			self.att_euler = np.unwrap(self.att_euler, axis=0)
 		except:

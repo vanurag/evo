@@ -29,7 +29,6 @@ import zipfile
 
 import numpy as np
 from scipy.interpolate import interp1d
-import tf.transformations as tf
 
 from evo import EvoException
 import evo.core.lie_algebra as lie
@@ -37,7 +36,7 @@ import evo.core.transformations as tr
 from evo.core import result
 from evo.core.trajectory import PosePath3D, PoseTrajectory3D
 from evo.tools import user
-from evo.tools import lib_px4
+import pyulog
 
 logger = logging.getLogger(__name__)
 
@@ -313,11 +312,11 @@ def write_bag_trajectory(bag_handle, traj, topic_name, frame_id=""):
     logger.info("Saved geometry_msgs/PoseStamped topic: " + topic_name)
 
 
-def getEulerFromQuaternion(data,idx):
-    n = len(data)
+def getEulerFromQuaternion(data_quat):
+    n = len(data_quat)
     data_euler = np.zeros((n,3))
     for i in range(0,n):
-        data_euler[i,:] = tf.euler_from_quaternion(data[i,idx])
+        data_euler[i,:] = tr.euler_from_quaternion(data_quat[i,:])
     return np.unwrap(data_euler, axis=0)
 
 
@@ -325,7 +324,7 @@ def getQuaternionFromEuler(data_euler):
     n = len(data_euler)
     data_quat = np.zeros((n,4))
     for i in range(0,n):
-        data_quat[i,[1,2,3,0]] = tf.quaternion_from_euler(*data_euler[i,:])
+        data_quat[i,:] = tr.quaternion_from_euler(*data_euler[i,:])
     return data_quat
 
 
@@ -352,7 +351,7 @@ def get_groundtruth(bag_handle, groundtruth_topic):
 
     gt_raw_xyz = np.array(gt_raw_xyz)
     gt_raw_quat = np.array(gt_raw_quat)
-    gt_raw_euler = getEulerFromQuaternion(gt_raw_quat, [1,2,3,0])
+    gt_raw_euler = getEulerFromQuaternion(gt_raw_quat)
     gt_raw_t = np.array(gt_raw_t)
     return gt_raw_t, gt_raw_xyz, gt_raw_quat, gt_raw_euler
 
@@ -367,6 +366,50 @@ def get_mavros_timesync(bag_handle):
     return mavros_timesync
 
 
+def get_px4_lpe(data_path, ulog_name):
+    lpe = []
+    path = data_path + '/' + ulog_name + '/' + ulog_name + '_vehicle_local_position_0.csv'
+    try:
+        with open(path, 'rb') as csvfile:
+            reader = csv.reader(csvfile, delimiter=',')
+            i = 0
+            for row in reader:
+                if i > 0:
+                    lpe.append(row)
+                i = i + 1
+        lpe = np.array(lpe).astype(float)
+        lpe[:, 0] /= 1.0e6  # convert to sec
+        return lpe
+    except:
+        print
+        "\x1b[0;30;41mCould not find local position logfile.\x1b[0m"
+
+
+def get_px4_att(data_path, ulog_name):
+    att = []
+    path = data_path + '/' + ulog_name + '/' + ulog_name + '_vehicle_attitude_0.csv'
+    try:
+        with open(path, 'rb') as csvfile:
+            reader = csv.reader(csvfile, delimiter=',')
+            i = 0
+            for row in reader:
+                if i > 0:
+                    att.append(row)
+                i = i + 1
+        att = np.array(att).astype(float)
+        att[:, 0] /= 1.0e6 # convert to sec
+        n = np.size(att, 0)
+        att_euler = np.zeros([n, 3])
+        for i in range(0, n):
+            q = att[i, 1:5]
+            att_euler[i] = tr.euler_from_quaternion(q)
+        att_euler = np.unwrap(att_euler, axis=0)
+        return att, att_euler
+    except:
+        print
+        "\x1b[0;30;41mCould not find attitude logfile.\x1b[0m"
+
+
 def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topic):
     """
     :param data_path: directory where rosbag and ulog exist
@@ -377,11 +420,14 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
     """
 
     # Read Local position estimate from PX4 ulog
-    px4log = lib_px4.px4Log(data_path, ulog_name)
-    px4log.readlpe()
-    px4log.readAttitude()
-    px4log.lpe[:,0] /= 1.0e6  # convert to sec
-    px4log.att[:,0] /= 1.0e6
+    px4log = pyulog.ULog(data_path + '/' + ulog_name + '/' + ulog_name + '.ulg')
+    # position of IMU in COM frame
+    px4_imu_pos = np.array([px4log.initial_parameters['EKF2_IMU_POS_X'],
+                            px4log.initial_parameters['EKF2_IMU_POS_Y'],
+                            px4log.initial_parameters['EKF2_IMU_POS_Z']])
+    # Create empty arrays to avoid exceptions:
+    px4_lpe = get_px4_lpe(data_path, ulog_name)
+    px4_att, px4_att_euler = get_px4_att(data_path, ulog_name)
 
     # Read groundtruth trajectory and MAVROS timesync info from ROSBAG
     if not bag_handle.get_message_count(groundtruth_topic) > 0:
@@ -400,11 +446,11 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
 
     # Crop the overlapping time window and realign data to new timescale with fixed intervals
     dt = 0.01  # 100 Hz
-    print("Got LPE data from ", px4log.lpe[0,0], " to ", px4log.lpe[-1,0], " sec")
-    print("Got Attitude data from ", px4log.att[0,0], " to ", px4log.att[-1,0], " sec")
+    print("Got LPE data from ", px4_lpe[0,0], " to ", px4_lpe[-1,0], " sec")
+    print("Got Attitude data from ", px4_att[0,0], " to ", px4_att[-1,0], " sec")
     print("Got GT data from ", gt_raw_t[0], " to ", gt_raw_t[-1], " sec")
-    t_min = max([px4log.lpe[0,0], px4log.att[0,0], gt_raw_t[0]])
-    t_max = min([px4log.lpe[-1,0], px4log.att[-1,0], gt_raw_t[-1]]) - dt
+    t_min = max([px4_lpe[0,0], px4_att[0,0], gt_raw_t[0]])
+    t_max = min([px4_lpe[-1,0], px4_att[-1,0], gt_raw_t[-1]]) - dt
     print("Realigning data with dt = ", dt, ", t0 = ", t_min, ", t_end = ", t_max)
     t = np.arange(t_min, t_max, dt)
     # Re-align all data
@@ -413,11 +459,11 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
     gt_quat = getQuaternionFromEuler(gt_euler)
     f = interp1d(gt_raw_t, gt_raw_xyz.transpose())
     gt_xyz = f(t).transpose()
-    f = interp1d(px4log.lpe[:,0], px4log.lpe[:,4:7].transpose())
+    f = interp1d(px4_lpe[:,0], px4_lpe[:,4:7].transpose())
     lpe_xyz = f(t).transpose()
-    f = interp1d(px4log.att[:,0], px4log.att_euler.transpose())
+    f = interp1d(px4_att[:,0], px4_att_euler.transpose())
     att_euler = f(t).transpose()
-    att_quat = getQuaternionFromEuler(att_euler)[:,[3,0,1,2]]
+    att_quat = getQuaternionFromEuler(att_euler)
 
     # Frames
     # I -> Inertial reference frame for groundtruth
@@ -427,7 +473,7 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
 
     # Calibration params
     q_CB = np.array([0.0,1.0,0.0,0.0])  # [w,x,y,z]
-    C_t_CI = px4log.imu_pos
+    C_t_CI = px4_imu_pos
     I_t_IB = np.array([-0.26, 0.0, 0.022])  # this is a calibration param
     C_t_CB = I_t_IB + C_t_CI
 
@@ -444,11 +490,10 @@ def read_px4_bag_trajectories(data_path, bag_handle, ulog_name, groundtruth_topi
 
     # Convert to PoseTrajectory3D
     logger.debug("Loaded {} Local position estimate messages".format(
-        len(px4log.lpe)))
+        len(px4_lpe)))
     logger.debug("Loaded {} Groundtruth messages from topic {}".format(
         len(gt_raw_t), groundtruth_topic))
 
-    print("Debug lengths: ", len(t), len(lpe_xyz), len(att_quat), len(gt_xyz), len(gt_quat))
     return [PoseTrajectory3D(W_t_WB, q_WB, t, meta={"frame_id": "PX4 XYZ"}),
             PoseTrajectory3D(I_t_IB, q_IB, t, meta={"frame_id": "GT Body"})]
 
